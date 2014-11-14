@@ -1,0 +1,652 @@
+function[cupsCombined,omega,rpm,t_global]=Model_parameters_Ini(NrBig,NrMed,x_centerIni,y_centerIni)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%% Take three images and run circle detection
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Set up video input and trigger mode
+vid = videoinput('kinect',1,'RGB_640x480');
+triggerconfig(vid, 'manual') %The triggermode is set to manual to make the 
+                             %image capturing more efficient. This mode 
+                             % means that the connection to the kinect is 
+                             % opened then the specified number of images is 
+                             % taken and at the end the connection is stopped. 
+                             % If manual trigger mode is not specified the 
+                             % connection is opened and stop for every image. 
+
+%%% Adjustable parameters for the image capturing
+itteration_outer = 0; % An itteration counter for the image capturing is intialized
+waitImgCap = 0.4; % The time [s] that the code waits between every image 
+                  % is captured. 
+reduce = 1; % A reduce factor to scale down the images if necessary (the 
+            % factor is 1 and therefore does not reduce the image size 
+            % because it has been found that reducing the resolution makes 
+            % the diffence in cup radius between big and medium cup too small)
+
+flag = 0;
+
+while flag == 0 ;
+itteration_outer = itteration_outer + 1;
+
+if itteration_outer >= 2;
+    clearvars cupsCombined
+end
+
+itteration_inner = 0; % An itteration counter for the image capturing is intialized
+max_itteration_inner = 10; % Maximum nummer of itterations are specified
+succes = 0; % A succes variable is defined to zero. This is used to ensure 
+            % that the image capturing runs until the detected amount of 
+            % cups match or is greater that the number given in the order.
+all_same = 0; % An all_same varialble is defined to zero. This is used to 
+              % ensure that the number and sizes of cups in the three 
+              % captured images are the same.
+
+% In the following while loop the image capturing and hough circle
+% detection is performed. The loop runs until the amount of medium and big
+% cups are the same or greater than what is specified in the order and
+% until the number and sizes of detected cups is the same in all three
+% images. A maximum number of itterations is added to ensure the loop
+% cannot run indefinatly.
+
+while succes == 0 && (itteration_inner < max_itteration_inner) || all_same == 0
+    itteration_inner = itteration_inner + 1;
+
+    
+    
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%% Capture images
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%    
+    
+% Start image acquisition but not logging 
+start(vid);
+% Start logging data
+trigger(vid);
+
+
+tic % tic starts a timer function that runs in the background
+t_start(1,1) = toc; % toc is used to get the current time of the timer 
+                    % function before the image is taken.  
+                    
+img1 = getsnapshot(vid); % The fist image of the turntable is captured
+
+t_stop(1,1) = toc;  % toc is used to get the current time of the timer 
+                    % function after the image is taken. 
+                    % The time is later used to determine the angular
+                    % velocity when the change in angle between the cups 
+                    % in each image has ben determined.  
+                    
+t_global = getSeconds; % A t_global is determined using the function 
+                       % getSeconds.The function returns the system time in
+                       % seconds. The time is later used in a the model of
+                       % the turntable.
+                       
+pause(waitImgCap) % A pause is added before the next image is captured to 
+                  % ensure a certain change in angular position of the
+                  % cups.
+
+t_start(2,1) = toc; % toc is used to get the current time of the timer 
+                    % function before the image is taken.  
+img2 = getsnapshot(vid); % The second image of the turntable is captured
+t_stop(2,1) = toc; % toc is used to get the current time of the timer 
+                   % function after the image is taken. 
+
+pause(waitImgCap) % A pause is added before the next image is captured to 
+                  % ensure a certain change in angular position of the
+                  % cups.
+
+t_start(3,1) = toc; % toc is used to get the current time of the timer 
+                    % function before the image is taken. 
+img3 = getsnapshot(vid); % The third image of the turntable is captured
+t_stop(3,1) = toc; % toc is used to get the current time of the timer 
+                   % function after the image is taken. 
+
+stop(vid); % The connection to the kinect is terminated
+
+% The image capturing time is displayed
+disp('Images captured it took')
+t_stop(3,1)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%% Change captured images to gray scale and 
+%%%%%%% cropped (to make circle detection more efficient)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+grayIm1 = rgb2gray(img1); % The first image is change to grayscale
+grayIm1Crop = imcrop(grayIm1,[175 75 300 300]); % The first image is cropped
+grayIm1Crop = imresize(grayIm1Crop,reduce); % The first image is reduced in 
+                                            % size using the reduce factor. 
+
+grayIm2 = rgb2gray(img2); % The second image is change to grayscale
+grayIm2Crop = imcrop(grayIm2,[175 75 300 300]); % The second image is cropped
+grayIm2Crop = imresize(grayIm2Crop,reduce); % The second image is reduced in 
+                                            % size using the reduce factor.
+
+grayIm3 = rgb2gray(img3); % The third image is change to grayscale
+grayIm3Crop = imcrop(grayIm3,[175 75 300 300]); %The third image is cropped
+grayIm3Crop = imresize(grayIm3Crop,reduce); % The second image is reduced in 
+                                            % size using the reduce factor.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%% Houghcircle detection and plot of result
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Minimun radius in pixels for the circles in the image
+min_rad = 34; % Determined iteratively for the given setup
+
+%Maximum radius in pixels for the circles in the image
+max_rad = 46; % Determined iteratively for the given setup
+
+%Threshold between 0 and 1
+thresh = .42; % Determined iteratively for the given setup
+
+% Delta is the maximal difference between two circles for them to be 
+% considered as the same one.
+delta = 20; % Determined iteratively for the given setup
+
+
+%Get x and y positions for the circles in the cropped image. Also the y
+%values for the top and the bottom of the circles
+
+%%%%%%%%%%%%%
+%%% Image 1
+%%%%%%%%%%%%%
+t1 = toc; % toc is used to determine the time before circle detection
+
+% The houghcircle detection is performed on the first image
+circles1 = houghcircles(grayIm1Crop, min_rad, max_rad,thresh,delta); 
+
+t2 = toc; % toc is used to determine the time before circle detection
+
+% The time to perform houghcircle detection is displayed
+disp('Cicle detection on image 1 took')
+t = t2-t1
+
+r1 = circles1(:,3); % A radius vector for the first image is defined
+xcirc1 = circles1(:,1); % A vector containing the x-coordinate for the circle 
+                        % center for the first image is defined.
+ycirc1 = circles1(:,2); % A vector containing the y-coordinate for the circle 
+                        % center for the first image is defined.
+
+ytop1 = ycirc1 - r1; % A vector containing the y-coordinate for the top of 
+                     % the circle for the first image is defined. 
+ybottom1 = ycirc1 + r1; % A vector containing the y-coordinate for the 
+                        % bottom of the circle for the first image is defined. 
+
+% The center, top and bottom points of the detected circles are plotted on 
+% top of the cropped image.                        
+figure
+imshow(grayIm1Crop);
+hold on
+plot(xcirc1,ycirc1,'*')
+plot(xcirc1,ytop1,'.')
+plot(xcirc1,ybottom1,'.')
+
+% The detection order of the cups are plotted on top of the image as well
+for i = 1:length(r1(:,1))
+    info = {strcat('cup ', num2str(i))};
+    text(xcirc1(i),ycirc1(i),info);
+end
+
+%%%%%%%%%%%%%
+%%% Image 2
+%%%%%%%%%%%%%
+t1 = toc; % toc is used to determine the time before circle detection
+
+% The houghcircle detection is performed on the second image
+circles2 = houghcircles(grayIm2Crop, min_rad, max_rad,thresh,delta); 
+
+t2 = toc; % toc is used to determine the time before circle detection
+
+% The time to perform houghcircle detection is displayed
+disp('Cicle detection on image 2 took')
+t = t2-t1
+
+r2 = circles2(:,3); % A radius vector for the second image is defined
+xcirc2 = circles2(:,1); % A vector containing the x-coordinate for the circle 
+                        % center for the second image is defined.
+ycirc2 = circles2(:,2); % A vector containing the y-coordinate for the circle 
+                        % center for the second image is defined.
+                        
+ytop2 = ycirc2 - r2; % A vector containing the y-coordinate for the top of 
+                     % the circle for the second image is defined. 
+ybottom2 = ycirc2 + r2; % A vector containing the y-coordinate for the 
+                        % bottom of the circle for the second image is defined. 
+
+% The center, top and bottom points of the detected circles are plotted on 
+% top of the cropped image.                           
+figure
+imshow(grayIm2Crop);
+hold on
+plot(xcirc2,ycirc2,'*r')
+plot(xcirc2,ytop2,'.r')
+plot(xcirc2,ybottom2,'.r')
+% The detection order of the cups are plotted on top of the image as well
+for i = 1:length(r2(:,1))    
+    info = {strcat('cup ', num2str(i))};
+    text(xcirc2(i),ycirc2(i),info);
+end
+
+%%%%%%%%%%%%%
+%%% Image 3
+%%%%%%%%%%%%%
+t1 = toc; % toc is used to determine the time before circle detection
+
+% The houghcircle detection is performed on the second image
+circles3 = houghcircles(grayIm3Crop, min_rad, max_rad,thresh,delta);
+
+t2 = toc; % toc is used to determine the time before circle detection
+
+% The time to perform houghcircle detection is displayed
+disp('Cicle detection on image 3 took')
+t = t2-t1
+
+r3 = circles3(:,3); % A radius vector for the third image is defined
+xcirc3 = circles3(:,1); % A vector containing the x-coordinate for the circle 
+                        % center for the third image is defined.
+ycirc3 = circles3(:,2); % A vector containing the y-coordinate for the circle 
+                        % center for the third image is defined.
+                        
+ytop3 = ycirc3 - r3; % A vector containing the y-coordinate for the top of 
+                     % the circle for the third image is defined. 
+ybottom3 = ycirc3 + r3; % A vector containing the y-coordinate for the 
+                        % bottom of the circle for the second third is defined. 
+
+% The center, top and bottom points of the detected circles are plotted on 
+% top of the cropped image.   
+figure
+imshow(grayIm3Crop);
+hold on
+plot(xcirc3,ycirc3,'*g')
+plot(xcirc3,ytop3,'.g')
+plot(xcirc3,ybottom3,'.g')
+% The detection order of the cups are plotted on top of the image as well
+for i = 1:length(r3(:,1))
+    info = {strcat('cup ', num2str(i))};
+    text(xcirc3(i),ycirc3(i),info);
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%% Check if number of cups match expected
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+r_Big = 42; % Minimum radius of big cup in pixels
+
+NrBig1 = 0; NrMed1 = 0; % Initialization of medium and big cup counters 
+                        % for the first image 
+                        
+% The number of detected medium and big cups in the first image is determined                         
+for i = 1:length(r1(:,1))
+    if  r1(i) >= r_Big  
+        NrBig1 = NrBig1 + 1;
+    elseif r1(i) < r_Big
+        NrMed1 = NrMed1 + 1;
+    end 
+end
+
+NrBig2 = 0; NrMed2 = 0; % Initialization of medium and big cup counters 
+                        % for the second image 
+                        
+% The number of detected medium and big cups in the second image is determined                           
+for i = 1:length(r2(:,1))
+    if  r2(i) >= r_Big 
+        NrBig2 = NrBig2 + 1;
+    elseif r2(i) < r_Big
+        NrMed2 = NrMed2 + 1;
+    end 
+end
+
+NrBig3 = 0; NrMed3 = 0; % Initialization of medium and big cup counters 
+                        % for the third image 
+                        
+% The number of detected medium and big cups in the third image is determined   
+for i = 1:length(r3(:,1))
+    if  r3(i) >= r_Big 
+        NrBig3 = NrBig3 + 1;
+    elseif r3(i) < r_Big
+        NrMed3 = NrMed3 + 1;
+    end 
+end
+
+% If the number of detected medium and big cups for all images is equal to 
+% or greater than what is in the order the succes is changed to one. This
+% is done to make sure that the number of detected cups is at least the
+% number given in the order. The reason its not equal to is that if an
+% extra cup that is not part of the order is placed on the turntable the
+% script is able to continue.
+if NrBig1 >= NrBig && NrBig2 >= NrBig && NrBig3 >= NrBig && NrMed1 >= NrMed ...
+        NrMed2 >= NrMed && NrMed3 >= NrMed;
+    succes = 1;
+end
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%% Check if number of cups match for all three images
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% If the number of detected cups in all the images is the same the 
+% all_same is changed to one. 
+if length(xcirc1(:,1)) == length(xcirc2(:,1)) && length(xcirc1(:,1)) == length(xcirc3(:,1))
+    all_same = 1;
+end
+
+end
+
+
+%function [ cupsCombined ] = TrackCup( RawCups1, RawCups2, RawCups3 )
+
+%TrackCup take cup locations from consecutive photos, recognise individual
+%cups and return a structure array containing the different locations of
+%each cup between images
+%
+%needs to use function getVectors to find the vector magnitude between cups for
+%each image
+%   
+%  cupsCombined is an n by 4 structure array where n=number of cups
+%  cupsCombined has fields: radius(cm), pos1(x,y coord), pos2, pos3
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%first part for testing only - to construct some example inputs
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+%Create structures
+for i=1:length(xcirc1(:,1))    
+    cups1(i).x0 = xcirc1(i,1);
+    cups1(i).y0 = ycirc1(i,1);
+    cups1(i).a=r1(i,1);     
+end
+
+for i=1:length(xcirc2(:,1))    
+    cups2(i).x0 = xcirc2(i,1);
+    cups2(i).y0 = ycirc2(i,1);
+    cups2(i).a=r2(i,1);     
+end
+
+for i=1:length(xcirc3(:,1))    
+    cups3(i).x0 = xcirc3(i,1);
+    cups3(i).y0 = ycirc3(i,1);
+    cups3(i).a=r3(i,1);     
+end
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%compare relative positions to track cup trajectories
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+cropOffset=[175,75];
+cropScale=reduce;
+H=63;
+f=528.4;
+
+cups1=metricLocation(cups1, cropOffset, cropScale, H, f);
+cups2=metricLocation(cups2, cropOffset, cropScale, H, f);
+cups3=metricLocation(cups3, cropOffset, cropScale, H, f);
+%compare the relative vector magnitudes between each of the images. if two
+%sets of cup data share the same diameter and relative distances to
+%neighbors, these are the same cup.
+
+%get the vector magnitudes for each of the images
+%get the vector magnitude and angles for each of the images
+cups1=Vectors_2(cups1);
+cups2=Vectors_2(cups2);
+cups3=Vectors_2(cups3);
+
+numcups=size(cups1,2);
+dist_tol = 1.4;
+angle_tol = 0.4;
+
+for i=1:numcups
+    for j=1:numcups
+        for k=1:numcups
+            vectorMags1=cups1(i).vectorMags;
+            vectorAngs1=cups1(i).vectorAngs;
+%             vectorMags1=round(vectorMags1*50)/50; %round to one decimal
+% 
+            vectorMags2=cups2(j).vectorMags;
+            vectorAngs2=cups2(j).vectorAngs;
+%             vectorMags2=round(vectorMags2*50)/50;
+% 
+            vectorMags3=cups3(k).vectorMags;
+            vectorAngs3=cups3(k).vectorAngs;
+%             vectorMags3=round(vectorMags3*50)/50;
+            samecup1=(cups1(i).metricRadius == cups2(j).metricRadius);
+            dist1=min(abs(vectorMags1 - vectorMags2) < dist_tol);
+            angle1=min(abs(vectorAngs1 - vectorAngs2) < angle_tol);
+            
+            samecup2=(cups2(j).metricRadius == cups3(k).metricRadius);
+            dist2=min(abs(vectorMags2 - vectorMags3) < dist_tol) ;
+            angle2=min(abs(vectorAngs2 - vectorAngs3) < angle_tol);
+            
+            if samecup1==1 && dist1==1  && angle1==1   && samecup2==1  ...
+                    && dist2==1  && angle2==1  
+                    
+                    
+                    pos1=[cups1(i).x0, cups1(i).y0];
+                    pos2=[cups2(j).x0, cups2(j).y0];
+                    pos3=[cups3(k).x0, cups3(k).y0];
+                   
+                    cupsCombined(i).Radius=cups1(i).metricRadius;
+                    cupsCombined(i).Pos1=pos1;
+                    cupsCombined(i).Pos2=pos2;
+                    cupsCombined(i).Pos3=pos3;
+                    cupsCombined(i).mPos1=cups1(i).MetricPos;
+                    cupsCombined(i).mPos2=cups2(i).MetricPos;
+                    cupsCombined(i).mPos3=cups3(i).MetricPos;
+                    
+                    cupsCombined(i).dist1=dist1;
+                    cupsCombined(i).ang1=angle1;
+                    cupsCombined(i).dist2=dist2;
+                    cupsCombined(i).ang2=angle2;
+            else 
+                    cupsCombined(i).dist1=dist1;
+                    cupsCombined(i).ang1=angle1;
+                    cupsCombined(i).dist2=dist2;
+                    cupsCombined(i).ang2=angle2;
+                    
+                
+            end
+        end %for k
+    end %for j          
+end %for i 
+
+
+k = 1;
+for i = 1:numcups
+    stacked_array(k:k+2,1:2) = [cupsCombined(i).Pos1 ; cupsCombined(i).Pos2 ; cupsCombined(i).Pos3];
+ k = k + 3;
+end
+
+succes1 = 1;
+for i = 1:length(stacked_array(:,1))
+    for j = 1:length(stacked_array(:,1))
+        
+        if i ~= j
+        pos1 = stacked_array(i,1:2);
+        pos2 = stacked_array(j,1:2);
+            if pos1 == pos2
+               succes1 = 0; 
+            end
+        
+        end
+        
+    end
+end
+succes2 = 1;
+for i = 1:numcups 
+    if sum(size(cupsCombined(1).Radius)) == 0;
+        succes2 = 0;
+    end
+end
+
+if succes1 == 1 && succes2 == 1 
+    flag = 1;
+end
+
+
+end
+%plot the results
+figure
+imshow(grayIm1Crop);
+hold on
+for i=1:numcups
+    
+    pos1=cupsCombined(i).Pos1 %plotted in blue
+    pos2=cupsCombined(i).Pos2 %plotted in green
+    pos3=cupsCombined(i).Pos3 %plotted in red
+    
+    plot(pos1(1), pos1(2), 'bo'), hold on, axis on
+    plot(pos2(1), pos2(2), 'go')
+    plot(pos3(1), pos3(2), 'ro')
+end
+
+
+x_center = x_centerIni;
+y_center = y_centerIni;
+
+% The center of the turntable is calculated in metric space
+x_centerMetric = (H/f)*x_center;
+y_centerMetric = (H/f)*y_center;
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%% Calculation of angular velocity of turn table
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% To be able to calculate the angular velocity of the turn table a set of
+% vectors going from the turntable center to the three cup positions is
+% calculated for each of the detected cups. The calculated vectors are
+% plotted on top of the first image.
+figure
+imshow(grayIm1Crop);
+hold on
+for i = 1 : numcups % The for loop is run for each of the detected cups.
+    
+   output1 = cupsCombined(i).Pos1; 
+   X_pos1 = output1(1); % The x-coordinate of the cup position in the first 
+                        % image is defined.
+   Y_pos1 = output1(2); % The y-coordinate of the cup position in the first 
+                        % image is defined.
+   vector1 = [X_pos1 Y_pos1] - [x_center y_center]; % A vector going form 
+                                                    % the turn table center
+                                                    % to the cup position 
+                                                    % in the first image is
+                                                    % calculated.
+   
+   output2 = cupsCombined(i).Pos2; 
+   X_pos2 = output2(1); % The x-coordinate of the cup position in the second 
+                        % image is defined.
+   Y_pos2 = output2(2); % The y-coordinate of the cup position in the second 
+                        % image is defined.
+   vector2 = [X_pos2 Y_pos2] - [x_center y_center]; % A vector going form 
+                                                    % the turn table center
+                                                    % to the cup position 
+                                                    % in the second image is
+                                                    % calculated.
+   
+   output3 = cupsCombined(i).Pos3; 
+   X_pos3 = output3(1); % The x-coordinate of the cup position in the third 
+                        % image is defined.
+   Y_pos3 = output3(2); % The y-coordinate of the cup position in the third 
+                        % image is defined.
+   vector3 = [X_pos3 Y_pos3] - [x_center y_center]; % A vector going form 
+                                                    % the turn table center
+                                                    % to the cup position 
+                                                    % in the third image is
+                                                    % calculated.
+   
+   % All the three calculated vectors are arranged in an array and 
+   % subsequently inserted into a structure array. 
+   vectors = [vector1;vector2;vector3];
+   cupsCombined(i).Vectors = vectors;     
+
+% The vectors are plotted on top of the first image with different colors
+% for each detected cup.
+if i == 1       
+plot([x_center X_pos1],[y_center Y_pos1],'b')
+plot([x_center X_pos2],[y_center Y_pos2],'b')  
+plot([x_center X_pos3],[y_center Y_pos3],'b')  
+
+elseif i == 2
+plot([x_center X_pos1],[y_center Y_pos1],'y')
+plot([x_center X_pos2],[y_center Y_pos2],'y')  
+plot([x_center X_pos3],[y_center Y_pos3],'y')       
+
+elseif i == 3
+plot([x_center X_pos1],[y_center Y_pos1],'g')
+plot([x_center X_pos2],[y_center Y_pos2],'g')  
+plot([x_center X_pos3],[y_center Y_pos3],'g')  
+
+elseif i == 4
+plot([x_center X_pos1],[y_center Y_pos1],'k')
+plot([x_center X_pos2],[y_center Y_pos2],'k')  
+plot([x_center X_pos3],[y_center Y_pos3],'k') 
+
+elseif i == 5
+plot([x_center X_pos1],[y_center Y_pos1],'r')
+plot([x_center X_pos2],[y_center Y_pos2],'r')  
+plot([x_center X_pos3],[y_center Y_pos3],'r')   
+end
+
+end
+
+% The angle between the cup vector for the first image and the second image
+% is calculated. And the angle between the cup vector for the second and
+% the third image is calculated. This is done for each of the detected
+% cups.
+for i = 1 : numcups   
+    vectors = cupsCombined(i).Vectors; % The calculated vectors are read 
+                                       % from the structure array.
+    vector1 = vectors(1,1:2); % Cup postion vector for cup i in the first 
+                              % image is defined.
+    vector2 = vectors(2,1:2); % Cup postion vector for cup i in the second 
+                              % image is defined.
+    vector3 = vectors(3,1:2); % Cup postion vector for cup i in the third 
+                              % image is defined.
+    
+    % The angle between the cup position vector in the first and second
+    % image is calculated.
+    theta(1,i) = acos((dot(vector1,vector2))/(norm(vector1)*norm(vector2)));
+    
+    % The angle between the cup position vector in the second and third
+    % image is calculated.
+    theta(2,i) = acos((dot(vector2,vector3))/(norm(vector2)*norm(vector3)));
+end
+
+% Based on the calculated angles between the cup position vectors and the
+% time at which each image is captured the angular velocity is calculated.
+% Initially the change in angle over time (angular velocity) between each
+% vector for each cup is calculated.
+for i = 1 : numcups   
+    delta_t1 = t_stop(2,1) - t_stop(1,1); % The time between capturing the 
+                                          % first image and the second image 
+                                          % is calculated. 
+    delta_t2 = t_stop(3,1) - t_stop(2,1); % The time between capturing the 
+                                          % second image and the third image 
+                                          % is calculated. 
+    
+    omega_matrix(1,i) = theta(1,i)/delta_t1; % The angular velocity between 
+                                             % the first and the second 
+                                             % image is calculated for cup i.
+    omega_matrix(2,i) = theta(2,i)/delta_t2; % The angular velocity between 
+                                             % the second and the third 
+                                             % image is calculated for cup i.
+end
+
+% The angular velocity is calcultated as the average of all the calculated
+% angular velocities between each vector.
+omega = sum(sum(omega_matrix))/(length(omega_matrix(1,:))*2);
+
+% The angular velocity calculated in radians/second is converted to 
+% revolutions per minute (rpm). 
+rpm = omega*60/(2*pi);
+
+
+
+centre_metric=[x_centerMetric, x_centerMetric];
+for i=1:size(cupsCombined,2)
+    poscentre=cupsCombined(i).mPos1-centre_metric;
+    [theta,r]=cart2pol(poscentre(1),poscentre(2) );
+    cupsCombined(i).Theta_R=[theta,r];
+end
+
+end
+
