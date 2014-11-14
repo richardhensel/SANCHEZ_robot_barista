@@ -1,4 +1,5 @@
 NOTE: read the README in raw form to see diagram below
+
 SANCHEZ - Systematic, As-Nominated Coffee Handling in Explicit Zones
 
 Required installations: 
