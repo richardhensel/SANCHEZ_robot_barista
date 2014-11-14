@@ -25,7 +25,7 @@ A caddy containing all condiments is located 90 degrees to the left of the robot
 
 the turntable is positioned relative to the camera by positioning the corner of the camera's image on the specified origin. the origin is used as the point about which all other locations are determined. the base of the robot is 49.5 cm in x direction and 15 cm in the y direction from the origin
 
-
+DIAGRAM:
 
 
 ----------------------                                                                      coordinate directions
